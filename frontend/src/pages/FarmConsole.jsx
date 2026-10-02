@@ -86,6 +86,54 @@ export default function FarmConsole() {
         </table>
       </div>
 
+      <div className="grid grid-2 mt16">
+        <div className="card">
+          <div className="section-title">🧊 冰雹减产分配进度</div>
+          {(d.hail_allocations || []).length === 0 ? <Empty text="本季暂无减产分配方案" /> : (
+            <table>
+              <thead><tr><th>方案</th><th>可采/承诺</th><th>选择进度</th><th>状态</th><th></th></tr></thead>
+              <tbody>
+                {(d.hail_allocations || []).map((h) => (
+                  <tr key={h.id}>
+                    <td className="small">{h.title}<br /><span className="muted">{h.project_title} · {h.batch_no}</span></td>
+                    <td className="small">{fmtKg(h.pickable_kg)}<br /><span className="muted">/ {fmtKg(h.committed_kg)}</span></td>
+                    <td>{h.chosen}/{h.total_adoptions}</td>
+                    <td><Tag cls={h.status === 'confirmed' ? 'green' : 'amber'}>
+                      {h.status === 'open' ? '待选择' : h.status === 'confirming' ? '选择中' : h.status === 'confirmed' ? '已确认' : '已关闭'}</Tag></td>
+                    <td><button className="sm ghost" onClick={() => nav('/projects/' + h.project_id)}>处理</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="card">
+          <div className="section-title">⭐ 农场续认信用</div>
+          {(d.renew_credits || []).length === 0 ? <Empty text="本季暂无信用记录" /> : (
+            <>
+              {(d.renew_credits || []).map((c) => (
+                <div key={c.id} className="card" style={{ background: '#f0fdf4' }}>
+                  <div className="row">
+                    <strong>{c.season} 季</strong>
+                    <Tag cls={c.level === 'A' ? 'green' : c.level === 'B' ? 'amber' : 'red'}>{c.level} 级守信农场</Tag>
+                    <span className="spacer" />
+                    <strong style={{ fontSize: 22 }}>{Number(c.score).toFixed(0)}</strong>
+                  </div>
+                  <div className="grid grid-4 mt8">
+                    <Stat label="冰雹处置" value={c.hail_handled} />
+                    <Stat label="延期份额" value={c.delayed_shares} cls="blue" />
+                    <Stat label="换品类" value={c.switched_shares} cls="purple" />
+                    <Stat label="退款" value={c.refunded_shares} cls="red" />
+                  </div>
+                  <p className="small muted mt8">{c.note}</p>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+
       <div className="card">
         <div className="section-title">🚚 待办发货（按成熟度与订单优先级排产）</div>
         <table>

@@ -82,6 +82,35 @@ export const SHIP_STATUS_LABEL = {
   delivered: '已送达',
 }
 export const SHIP_STATUS_FLOW = ['planned', 'picked', 'packed', 'shipped', 'delivered']
+export const HAIL_OPTION_LABEL = {
+  delay: '延期交付',
+  switch: '换品类',
+  refund: '按比例退款',
+}
+export const HAIL_OPTION_DESC = {
+  delay: '第二批延期发出，农场加送精品果',
+  switch: '换为蓝莓 / 洋槐蜜等等量品类',
+  refund: '按保底缺口比例原路退款',
+}
+export const HAIL_ALLOC_STATUS = {
+  open: '待选择',
+  confirming: '选择确认中',
+  confirmed: '分配已确认',
+  closed: '已关闭',
+}
+export const HAIL_ALLOC_CLS = {
+  open: 'red',
+  confirming: 'amber',
+  confirmed: 'green',
+  closed: 'gray',
+}
+export const CLAIM_STATUS_LABEL = {
+  applied: '已报案',
+  surveying: '查勘中',
+  approved: '已核定',
+  settled: '已到账',
+  rejected: '已拒赔',
+}
 
 export function fmtMoney(v) {
   if (v === null || v === undefined) return '—'

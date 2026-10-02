@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import {
   get, post, KIND_EMOJI, INCIDENT_LABEL, INCIDENT_COLOR,
   fmtMoney, fmtKg, fmtDay, fmtDate,
+  HAIL_OPTION_LABEL, HAIL_ALLOC_STATUS, HAIL_ALLOC_CLS, CLAIM_STATUS_LABEL,
 } from '../api'
 import { Tag, KindTag, ShipFlow, Modal, Empty, Stat, useToast } from '../components/ui'
 import { useAuth } from '../auth'
@@ -32,6 +33,7 @@ export default function ProjectDetail() {
     ['checks', `成熟度抽检 (${d.maturity_checks.length})`],
     ['harvest', `采摘·分拣·发货 (${d.shipments.length})`],
     ['incidents', `异常工单 (${d.incidents.length})`],
+    ['hail', `🧊减产分配 (${(d.hail_allocations || []).length})`],
     ['delivery', '最终交付'],
   ]
 
@@ -231,11 +233,205 @@ export default function ProjectDetail() {
           </div>
         )}
 
+        {tab === 'hail' && <HailTab d={d} canOperate={canOperate} canService={user && ['service', 'admin'].includes(user.role)} onDone={load} />}
+
         {tab === 'delivery' && <DeliveryTab d={d} />}
       </div>
 
       {action && <ActionModal kind={action} projectId={p.id} onClose={() => setAction(null)} onDone={load} />}
     </>
+  )
+}
+
+// 冰雹减产分配 Tab：方案、选择进度、客服确认、最终确认
+function HailTab({ d, canOperate, canService, onDone }) {
+  const toast = useToast()
+  const allocs = d.hail_allocations || []
+  const [detailId, setDetailId] = useState(allocs[0]?.id || null)
+  const [detail, setDetail] = useState(null)
+  const [creating, setCreating] = useState(false)
+  const loadDetail = (id) => get(`/hail-allocations/${id}`).then(setDetail)
+  useEffect(() => { if (detailId) loadDetail(detailId).catch(() => {}) }, [detailId])
+  const refresh = () => { onDone(); if (detailId) loadDetail(detailId) }
+
+  if (allocs.length === 0 && !canOperate && !canService) return <Empty text="本批次暂无冰雹减产分配方案" />
+
+  return (
+    <div>
+      <div className="row">
+        <h3 style={{ margin: 0 }}>🧊 冰雹减产分配</h3>
+        <span className="spacer" />
+        {(canOperate || canService) && <button className="sm" onClick={() => setCreating(true)}>+ 记录减产分配方案</button>}
+      </div>
+      <p className="muted small mt8">平台记录受灾照片、保险报案、可采果数量与补偿方案；认养人三选一（延期/换品类/按比例退款），确认后证书与到货时间更新、农场续认信用同步。</p>
+
+      {allocs.length > 0 && (
+        <>
+          <div className="row mt8">
+            {allocs.map((a) => (
+              <button key={a.id} className={'sm ' + (a.id === detailId ? '' : 'ghost')} onClick={() => setDetailId(a.id)}>
+                方案#{a.id} {HAIL_ALLOC_STATUS[a.status]}
+              </button>
+            ))}
+          </div>
+          {detail && <HailAdminDetail detail={detail} canOperate={canOperate} canService={canService} onChanged={refresh} />}
+        </>
+      )}
+      {creating && <HailCreateModal projectId={d.project.id} onClose={() => setCreating(false)} onDone={() => { setCreating(false); onDone() }} />}
+    </div>
+  )
+}
+
+function HailAdminDetail({ detail, canOperate, canService, onChanged }) {
+  const toast = useToast()
+  const al = detail.allocation
+  const choices = detail.choices || []
+  const credit = detail.renew_credit
+  const pendingService = choices.filter((c) => c.option === 'switch' && c.service_status === 'pending')
+  const pendingBatch = choices.filter((c) => c.option === 'switch' && c.service_status === 'confirmed' && c.batch_status !== 'confirmed')
+  const canConfirm = canOperate && al.status !== 'confirmed' && al.status !== 'closed' &&
+    pendingService.length === 0 && pendingBatch.length === 0 && choices.length > 0
+
+  const serviceConfirm = async (cid, status) => {
+    try {
+      await post(`/hail-choices/${cid}/service`, { status, service_note: status === 'confirmed' ? '客服核对库存与档期，确认换品类，结果已同步客服组' : '库存不足，建议选择其他方式' })
+      toast(status === 'confirmed' ? '已确认换品类，等待认养人重新确认配送批次' : '已驳回')
+      onChanged()
+    } catch (e) { toast(e.message, true) }
+  }
+  const finalConfirm = async () => {
+    try {
+      const r = await post(`/hail-allocations/${al.id}/confirm`, {})
+      toast('减产分配已确认：证书换发、ETA 更新、退款出账、续认信用同步')
+      onChanged()
+    } catch (e) { toast(e.message, true) }
+  }
+
+  const shortage = Math.max(0, Number(al.committed_kg || 0) - Number(al.pickable_kg || 0))
+  return (
+    <div className="card mt16" style={{ background: '#fffbeb' }}>
+      <div className="row">
+        <strong>{al.title}</strong>
+        <Tag cls={HAIL_ALLOC_CLS[al.status]}>{HAIL_ALLOC_STATUS[al.status]}</Tag>
+        {al.insurance_status && <Tag cls={al.insurance_status === 'settled' ? 'green' : 'amber'}>
+          保险：{CLAIM_STATUS_LABEL[al.insurance_status] || al.insurance_status}{al.insurance_amount ? ` ¥${al.insurance_amount}` : ''}
+        </Tag>}
+      </div>
+      <div className="grid grid-4 mt16">
+        <Stat label="承诺总量" value={fmtKg(al.committed_kg)} />
+        <Stat label="可采果" value={fmtKg(al.pickable_kg)} cls="amber" />
+        <Stat label="缺口" value={fmtKg(shortage)} cls="red" />
+        <Stat label="建议退款比例" value={al.refund_pct + '%'} cls="red" />
+      </div>
+      {al.photos?.length > 0 && <div className="small muted mt8">📷 {al.photos.map((p) => p.caption).join('、')}</div>}
+      <p className="small mt8">{al.compensation_plan}</p>
+
+      <div className="section-title mt16">认养人选择（{choices.length} 笔）</div>
+      <table>
+        <thead><tr><th>订单</th><th>认养人</th><th>份数</th><th>选择</th><th>换品类/退款/ETA</th><th>客服</th><th>配送批次</th><th>状态</th>{canService && <th>操作</th>}</tr></thead>
+        <tbody>
+          {choices.map((c) => (
+            <tr key={c.id}>
+              <td>#{c.adoption_id}</td>
+              <td>{c.user_name}</td>
+              <td>{c.shares}</td>
+              <td><Tag cls={c.option === 'switch' ? 'purple' : c.option === 'refund' ? 'red' : 'blue'}>{HAIL_OPTION_LABEL[c.option]}</Tag></td>
+              <td className="small">
+                {c.option === 'switch' && <>{c.switch_title}<br /><span className="muted">约 {c.switch_kg}kg · 预计 {fmtDay(c.eta_date)}</span></>}
+                {c.option === 'refund' && <span className="muted">{c.refund_pct}% · {fmtMoney(c.refund_amount)}</span>}
+                {c.option === 'delay' && <span className="muted">延期至 {fmtDay(c.eta_date)}</span>}
+              </td>
+              <td>{c.service_status === 'confirmed' ? <Tag cls="green">已确认</Tag>
+                : c.service_status === 'rejected' ? <Tag cls="red">已驳回</Tag>
+                : c.service_status === 'pending' ? <Tag cls="amber">待确认</Tag> : '—'}</td>
+              <td>{c.batch_status === 'confirmed' ? <Tag cls="green">已确认</Tag>
+                : c.batch_status === 'pending' ? <Tag cls="red">待重确认</Tag> : '—'}</td>
+              <td>{c.status === 'confirmed' ? <Tag cls="green">已确认</Tag> : <Tag cls="amber">待确认</Tag>}</td>
+              {canService && (
+                <td>
+                  {c.option === 'switch' && c.service_status === 'pending' && (
+                    <div className="row">
+                      <button className="sm" onClick={() => serviceConfirm(c.id, 'confirmed')}>确认</button>
+                      <button className="sm ghost" onClick={() => serviceConfirm(c.id, 'rejected')}>驳回</button>
+                    </div>
+                  )}
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {choices.length === 0 && <Empty text="认养人尚未作出选择" />}
+
+      <div className="row mt16">
+        {pendingService.length > 0 && <Tag cls="amber">{pendingService.length} 笔换品类待客服确认</Tag>}
+        {pendingBatch.length > 0 && <Tag cls="red">{pendingBatch.length} 笔待认养人重新确认配送批次</Tag>}
+        <span className="spacer" />
+        {canConfirm && <button className="sm amber" onClick={finalConfirm}>✓ 确认减产分配（证书换发+ETA+退款+信用）</button>}
+      </div>
+
+      {credit && (
+        <div className="card mt16" style={{ background: '#f0fdf4' }}>
+          <div className="row">
+            <strong>农场续认信用（{credit.season} 季）</strong>
+            <Tag cls={credit.level === 'A' ? 'green' : 'amber'}>{credit.level} 级守信农场</Tag>
+            <span className="spacer" />
+            <strong style={{ fontSize: 20 }}>{Number(credit.score).toFixed(0)} 分</strong>
+          </div>
+          <div className="grid grid-4 mt8">
+            <Stat label="冰雹处置次数" value={credit.hail_handled} />
+            <Stat label="延期份额" value={credit.delayed_shares} cls="blue" />
+            <Stat label="换品类份额" value={credit.switched_shares} cls="purple" />
+            <Stat label="退款份额" value={credit.refunded_shares} cls="red" />
+          </div>
+          <p className="small muted mt8">{credit.note}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function HailCreateModal({ projectId, onClose, onDone }) {
+  const toast = useToast()
+  const [f, setF] = useState({
+    title: '', pickable_kg: 0, refund_pct: 0,
+    delay_eta: '2026-11-05', delay_note: '', delay_bonus: 1,
+    switch_json: '[{"kind":"blueberry","title":"优瑞卡蓝莓鲜果礼盒2盒（约3斤）","kg_equiv":1.5,"eta_date":"2026-11-10"}]',
+    photos_text: '[{"caption":"雹后落果","url":"/static/demo/hail1.jpg"}]',
+    compensation_plan: '',
+  })
+  const set = (k, v) => setF({ ...f, [k]: v })
+  const submit = async () => {
+    if (!f.title || !f.pickable_kg) return toast('标题与可采果数量必填', true)
+    let photos = [], switchOption = []
+    try { photos = f.photos_text ? JSON.parse(f.photos_text) : [] } catch { return toast('受灾照片 JSON 格式错误', true) }
+    try { switchOption = f.switch_json ? JSON.parse(f.switch_json) : [] } catch { return toast('换品类 JSON 格式错误', true) }
+    try {
+      await post('/hail-allocations', {
+        project_id: projectId, title: f.title, pickable_kg: Number(f.pickable_kg),
+        refund_pct: Number(f.refund_pct) || undefined, photos,
+        delay_option: { eta_date: f.delay_eta, note: f.delay_note, bonus_kg: Number(f.delay_bonus) || 0 },
+        switch_option: switchOption, compensation_plan: f.compensation_plan,
+      })
+      toast('减产分配方案已记录，认养人可开始三选一'); onDone()
+    } catch (e) { toast(e.message, true) }
+  }
+  return (
+    <Modal title="记录冰雹减产分配方案" onClose={onClose} wide>
+      <div className="grid grid-2">
+        <div><label>方案标题</label><input value={f.title} onChange={(e) => set('title', e.target.value)} placeholder="如：东坡3号苹果园冰雹减产分配方案" /></div>
+        <div><label>可采果数量 kg</label><input type="number" value={f.pickable_kg} onChange={(e) => set('pickable_kg', Number(e.target.value))} /></div>
+        <div><label>建议退款比例 %（留空自动按缺口算）</label><input type="number" value={f.refund_pct} onChange={(e) => set('refund_pct', Number(e.target.value))} /></div>
+        <div><label>延期预计到货日期</label><input type="date" value={f.delay_eta} onChange={(e) => set('delay_eta', e.target.value)} /></div>
+        <div><label>延期加送 kg</label><input type="number" step="0.5" value={f.delay_bonus} onChange={(e) => set('delay_bonus', Number(e.target.value))} /></div>
+      </div>
+      <label>延期说明</label><input value={f.delay_note} onChange={(e) => set('delay_note', e.target.value)} />
+      <label>换品类选项（JSON）</label><textarea rows="2" value={f.switch_json} onChange={(e) => set('switch_json', e.target.value)} />
+      <label>受灾照片（JSON）</label><textarea rows="2" value={f.photos_text} onChange={(e) => set('photos_text', e.target.value)} />
+      <label>补偿方案说明</label><textarea rows="3" value={f.compensation_plan} onChange={(e) => set('compensation_plan', e.target.value)}
+        placeholder="保险理赔到账金额、缺口折算、三选一说明、未足额部分承担方…" />
+      <button className="mt16" onClick={submit}>记录方案并通知认养人</button>
+    </Modal>
   )
 }
 

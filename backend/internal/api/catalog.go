@@ -406,6 +406,11 @@ func (s *Server) projectDetail(w http.ResponseWriter, r *http.Request, id int64)
 		`SELECT * FROM settlements WHERE project_id=$1`, id)
 	live, _ := s.queryRows(ctx,
 		`SELECT * FROM live_streams WHERE project_id=$1 ORDER BY starts_at DESC`, id)
+	allocations, _ := s.queryRows(ctx, `
+		SELECT ha.*, ic.status AS insurance_status, ic.amount AS insurance_amount
+		FROM hail_allocations ha
+		LEFT JOIN insurance_claims ic ON ic.id=ha.insurance_claim_id
+		WHERE ha.project_id=$1 ORDER BY ha.id DESC`, id)
 	var settlement interface{}
 	if len(settlements) > 0 {
 		settlement = settlements[0]
@@ -434,6 +439,7 @@ func (s *Server) projectDetail(w http.ResponseWriter, r *http.Request, id int64)
 		"charity":          charity,
 		"group_buys":       groupBuys,
 		"live_streams":     live,
+		"hail_allocations": allocations,
 		"settlement":       settlement,
 		"sum_harvested":    harvested,
 		"sum_shipped":      shipped,

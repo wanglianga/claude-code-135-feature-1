@@ -361,14 +361,23 @@ func (s *Server) handleInsuranceClaimByID(w http.ResponseWriter, r *http.Request
 	}
 	ctx := r.Context()
 	var incID interface{}
+	// 任意状态推进都找到对应冰雹工单（优先与该理赔直接关联的减产方案工单，
+	// 否则取项目内最新减产方案关联的工单，再退化为项目内最新冰雹工单），用于把理赔状态同步给认养人
+	_ = s.Pool.QueryRow(ctx, `
+		SELECT i.id FROM incidents i
+		WHERE i.kind='hail'
+		  AND i.project_id=(SELECT project_id FROM insurance_claims WHERE id=$1)
+		ORDER BY (EXISTS(SELECT 1 FROM hail_allocations ha
+		                 WHERE ha.incident_id=i.id AND ha.insurance_claim_id=$1)) DESC,
+		         i.id IN (SELECT ha2.incident_id FROM hail_allocations ha2
+		                  WHERE ha2.project_id=i.project_id AND ha2.incident_id IS NOT NULL
+		                  ORDER BY ha2.id DESC LIMIT 1) DESC,
+		         i.id DESC
+		LIMIT 1`, id).Scan(&incID)
 	q := `UPDATE insurance_claims SET status=$1`
 	args := []interface{}{status}
 	if status == "settled" {
 		q += `, settled_at=now()`
-		// 到账后自动生成保险赔付记录并挂到冰雹工单（如有）
-		_ = s.Pool.QueryRow(ctx,
-			`SELECT i.id FROM incidents i JOIN insurance_claims ic ON ic.project_id=i.project_id
-			 WHERE ic.id=$1 AND i.kind='hail' ORDER BY i.id LIMIT 1`, id).Scan(&incID)
 	}
 	if amt, ok := f64(in, "amount"); ok {
 		q += ", amount=$2"
@@ -392,6 +401,22 @@ func (s *Server) handleInsuranceClaimByID(w http.ResponseWriter, r *http.Request
 					`INSERT INTO incident_events(incident_id, actor_id, actor_role, action, note)
 					 VALUES($1,$2,'service','保险理赔到账',$3)`,
 					iid, u.ID, fmt.Sprintf("到账 ¥%.2f，将按缺口折算发放给认养人", amt))
+			}
+		}
+	} else if incID != nil {
+		// 理赔状态同步认养人：查勘/核定/拒赔均在冰雹工单留痕
+		if iid, ok := incID.(int64); ok {
+			statusText := map[string]string{
+				"surveying": "保险公司查勘中",
+				"approved":  "保险核定属于保险责任，等待理赔款到账",
+				"rejected":  "保险核定不属于保险责任",
+				"applied":   "理赔报案已提交",
+			}[status]
+			if statusText != "" {
+				_, _ = s.Pool.Exec(ctx,
+					`INSERT INTO incident_events(incident_id, actor_id, actor_role, action, note)
+					 VALUES($1,$2,'service','理赔状态同步认养人',$3)`,
+					iid, u.ID, statusText)
 			}
 		}
 	}

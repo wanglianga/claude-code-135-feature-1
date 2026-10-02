@@ -134,9 +134,10 @@ func (s *Server) handleMyAdoptions(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.queryRows(r.Context(), `
 		SELECT a.*, p.title, p.kind, p.batch_no, p.guarantee_kg, p.rights_text,
 		       f.name AS farm_name,
-		       (SELECT cert_no FROM certificates WHERE adoption_id=a.id) AS cert_no
+		       c.cert_no, c.version AS cert_version, c.reissue_note AS cert_reissue_note
 		FROM adoptions a JOIN projects p ON p.id=a.project_id
 		JOIN farms f ON f.id=p.farm_id
+		LEFT JOIN certificates c ON c.adoption_id=a.id
 		WHERE a.user_id=$1 ORDER BY a.id DESC`, u.ID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -156,6 +157,19 @@ func (s *Server) handleMyAdoptions(w http.ResponseWriter, r *http.Request) {
 			 WHERE c.adoption_id=$1 ORDER BY c.id`, aid)
 		cbs, _ := s.queryRows(r.Context(),
 			`SELECT * FROM callbacks WHERE adoption_id=$1`, aid)
+		// 冰雹减产分配：方案 + 本订单的选择
+		alloc, _ := s.queryOne(r.Context(), `
+			SELECT ha.*, ic.status AS insurance_status, ic.amount AS insurance_amount
+			FROM hail_allocations ha
+			LEFT JOIN insurance_claims ic ON ic.id=ha.insurance_claim_id
+			WHERE ha.project_id=$1 ORDER BY ha.id DESC LIMIT 1`, row["project_id"])
+		var choice map[string]interface{}
+		if alloc != nil {
+			if alID, ok := asID(alloc["id"]); ok {
+				choice, _ = s.queryOne(r.Context(),
+					`SELECT * FROM hail_choices WHERE allocation_id=$1 AND adoption_id=$2`, alID, aid)
+			}
+		}
 
 		var shipped, plannedKg float64
 		allDelivered := len(ships) > 0
@@ -226,6 +240,12 @@ func (s *Server) handleMyAdoptions(w http.ResponseWriter, r *http.Request) {
 		row["compensations"] = comps
 		row["callbacks"] = cbs
 		row["rights_fulfillment"] = fulfilled
+		if alloc != nil {
+			row["hail_allocation"] = alloc
+		}
+		if choice != nil {
+			row["hail_choice"] = choice
+		}
 		result = append(result, row)
 	}
 	writeJSON(w, 200, result)

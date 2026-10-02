@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { get, fmtMoney, KIND_LABEL, KIND_EMOJI, fmtDate } from '../api'
+import { get, fmtMoney, KIND_LABEL, KIND_EMOJI, fmtDate, fmtDay, HAIL_ALLOC_STATUS, HAIL_OPTION_LABEL } from '../api'
 import { Stat, Tag, Empty } from '../components/ui'
 
 export default function PlatformAdmin() {
@@ -21,6 +21,49 @@ export default function PlatformAdmin() {
         <Stat label="待处理工单" value={s.open_incidents} cls="red" />
         <Stat label="公益代捐份额" value={s.charity_shares} />
         <Stat label="企业团购需求" value={s.group_buy_count} cls="blue" />
+        <Stat label="冰雹减产分配" value={s.hail_allocations} cls="red" />
+        <Stat label="待办换品类确认" value={s.hail_pending_choices} cls="amber" />
+      </div>
+
+      <div className="grid grid-2 mt16">
+        <div className="card">
+          <div className="section-title">🧊 冰雹减产分配跟踪</div>
+          {(d.hail_allocations || []).length === 0 ? <Empty text="暂无减产分配方案" /> : (
+            <table>
+              <thead><tr><th>方案</th><th>可采/承诺</th><th>退款比例</th><th>状态</th><th>确认时间</th></tr></thead>
+              <tbody>
+                {(d.hail_allocations || []).map((h) => (
+                  <tr key={h.id}>
+                    <td className="small">{h.title}<br /><span className="muted">{h.project_title} · {h.batch_no}</span></td>
+                    <td className="small">{Number(h.pickable_kg || 0).toFixed(0)} / {Number(h.committed_kg || 0).toFixed(0)} kg</td>
+                    <td>{h.refund_pct}%</td>
+                    <td><Tag cls={h.status === 'confirmed' ? 'green' : 'amber'}>{HAIL_ALLOC_STATUS[h.status] || h.status}</Tag></td>
+                    <td className="small muted">{h.confirmed_at ? fmtDate(h.confirmed_at) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="card">
+          <div className="section-title">⭐ 农场续认信用榜</div>
+          {(d.renew_credits || []).length === 0 ? <Empty text="暂无信用记录" /> : (
+            <table>
+              <thead><tr><th>农场</th><th>季节</th><th>信用分</th><th>等级</th><th>延期/换品类/退款</th></tr></thead>
+              <tbody>
+                {(d.renew_credits || []).map((c) => (
+                  <tr key={c.id}>
+                    <td className="small">{c.farm_name}</td>
+                    <td>{c.season}</td>
+                    <td><strong>{Number(c.score).toFixed(0)}</strong></td>
+                    <td><Tag cls={c.level === 'A' ? 'green' : c.level === 'B' ? 'amber' : 'red'}>{c.level}</Tag></td>
+                    <td className="small">{c.delayed_shares} / {c.switched_shares} / {c.refunded_shares}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-2 mt16">

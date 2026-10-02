@@ -360,6 +360,16 @@ func (s *Server) handleFarmDashboard(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN adoptions a ON a.id=sh.adoption_id
 		WHERE p.farm_id=$1 AND sh.status IN ('planned','picked','packed','shipped')
 		ORDER BY sh.plan_date, sh.seq`, farmID)
+	renewCredits, _ := s.queryRows(ctx, `
+		SELECT frc.* FROM farm_renew_credit frc WHERE frc.farm_id=$1
+		ORDER BY frc.season DESC, frc.id DESC`, farmID)
+	hailAllocs, _ := s.queryRows(ctx, `
+		SELECT ha.id, ha.project_id, ha.batch_no, ha.title, ha.status, ha.pickable_kg,
+		       ha.committed_kg, ha.refund_pct, ha.confirmed_at, p.title AS project_title,
+		       (SELECT count(*) FROM hail_choices hc WHERE hc.allocation_id=ha.id) AS chosen,
+		       (SELECT count(*) FROM adoptions a WHERE a.project_id=ha.project_id) AS total_adoptions
+		FROM hail_allocations ha JOIN projects p ON p.id=ha.project_id
+		WHERE p.farm_id=$1 ORDER BY ha.id DESC`, farmID)
 
 	stats := map[string]interface{}{}
 	var (
@@ -387,6 +397,8 @@ func (s *Server) handleFarmDashboard(w http.ResponseWriter, r *http.Request) {
 		"plots":            plots,
 		"open_incidents":   openIncidents,
 		"active_shipments": todayShipments,
+		"renew_credits":    renewCredits,
+		"hail_allocations": hailAllocs,
 		"stats":            stats,
 	})
 }
@@ -421,6 +433,16 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 	stats["charity_shares"] = scanInt(`SELECT COALESCE(SUM(shares),0) FROM charity_adoptions`)
 	stats["group_buy_count"] = scanInt(`SELECT count(*) FROM group_buys`)
 	stats["insurance_settled"] = scanFloat(`SELECT COALESCE(SUM(amount),0) FROM insurance_claims WHERE status='settled'`)
+	stats["hail_allocations"] = scanInt(`SELECT count(*) FROM hail_allocations`)
+	stats["hail_pending_choices"] = scanInt(`
+		SELECT count(*) FROM hail_choices WHERE service_status='pending' OR batch_status='pending'`)
+
+	renewCredits, _ := s.queryRows(ctx, `
+		SELECT frc.*, f.name AS farm_name FROM farm_renew_credit frc
+		JOIN farms f ON f.id=frc.farm_id ORDER BY frc.score DESC, frc.id`)
+	hailAllocations, _ := s.queryRows(ctx, `
+		SELECT ha.*, p.title AS project_title FROM hail_allocations ha
+		JOIN projects p ON p.id=ha.project_id ORDER BY ha.id DESC`)
 
 	byKind, _ := s.queryRows(ctx, `
 		SELECT kind, COUNT(*) AS n, COALESCE(SUM(sold_shares),0) AS sold,
@@ -433,5 +455,7 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 		"stats":              stats,
 		"projects_by_kind":   byKind,
 		"recent_settlements": recentSettlements,
+		"renew_credits":      renewCredits,
+		"hail_allocations":   hailAllocations,
 	})
 }
