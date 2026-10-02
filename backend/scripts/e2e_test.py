@@ -38,6 +38,7 @@ def login(phone):
 T = {
     "adopter":  login("13900000002"),  # 陈曦
     "adopter2": login("13900000008"),  # 吴琳
+    "adopter3": login("13900000007"),  # 周凯（企业认养人，也用于换品类）
     "farmer":   login("13900000001"),  # 李远山
     "picker":   login("13900000003"),
     "packer":   login("13900000004"),
@@ -49,7 +50,7 @@ check("7 个角色全部登录成功", all(T.values()))
 
 # ---- 公开浏览 ----
 st, projs = call("GET", "/api/projects")
-check("公开浏览 5 个认养项目", st == 200 and len(projs) == 5, len(projs))
+check("公开浏览认养项目（含冰雹换购晚秋蓝莓）", st == 200 and len(projs) == 6, len(projs))
 st, p1 = call("GET", "/api/projects/1")
 need_keys = {"project", "logs", "maturity_checks", "harvest_tasks", "sorting",
              "shipments", "incidents", "insurance_claims", "settlement"}
@@ -84,7 +85,8 @@ check("已发货 20kg（首批12+二批8计划）", rf["shipped_kg"] == 12 and r
 check("履约中已实现尚不足(在途批次未发)", rf["fair"] is False, rf)
 check("含在途批次后预计公平兑现=true", rf["projected_fair"] is True, rf)
 check("赔付含保险560", rf["compensated_amount"] >= 599.9, rf)
-check("证书号展示", apple["cert_no"] == "CERT-APPLE-2026-A-0001")
+check("证书号展示（冰雹延期后已换发第2版）", apple["cert_no"] == "CERT-APPLE-2026-A-0001-R2" and apple["cert_version"] == 2,
+      (apple["cert_no"], apple["cert_version"]))
 check("分批发货计划与冷链路线", len(apple["shipments"]) == 2 and "冷链车" in apple["shipments"][0]["cold_route"])
 check("回访记录可见", len(apple["callbacks"]) == 1 and apple["callbacks"][0]["would_renew"])
 
@@ -256,6 +258,169 @@ check("结算含赔付与满意度", r["settlement"]["total_compensation"] >= 8 
       r["settlement"])
 st, p5b = call("GET", "/api/projects/5")
 check("结算后项目标记完成", p5b["project"]["status"] == "completed", p5b["project"]["status"])
+
+# ======================================================================
+# 冰雹减产分配全流程：登记(照片/保险/可采果/三选一) → 发布 → 认养人三选一
+#   延期(证书换发+ETA) / 退款(按比例) / 换品类(客服确认→批次再确认→证书换发)
+#   → 理赔状态同步认养人 → 关闭并同步农场续认信用
+# ======================================================================
+# 吴琳先认养水稻 1 份，保证发布时她有待选择订单
+st, r = call("POST", "/api/adoptions", T["adopter2"], {
+    "project_id": 4, "shares": 1, "recipient_name": "吴琳", "phone": "13900000008",
+    "address": "杭州市西湖区文三路478号华星时代广场"})
+check("吴琳认养水稻 1 份", st == 201 and r["cert_no"], r)
+rice_aid_w = r["adoption"]["id"]
+
+# 周凯再认养水稻 1 份，用于换品类三选一
+st, r = call("POST", "/api/adoptions", T["adopter3"], {
+    "project_id": 4, "shares": 1, "recipient_name": "周凯", "phone": "13900000007",
+    "address": "上海市浦东新区张江高科技园区博云路2号"})
+check("周凯认养水稻 1 份", st == 201 and r["cert_no"], r)
+rice_aid_z = r["adoption"]["id"]
+
+# 农场记冰雹灾害（自动建冰雹工单，受灾照片归档在灾害日志）
+st, r = call("POST", "/api/projects/4/logs", T["farmer"], {
+    "log_type": "disaster", "title": "稻田灌浆期突降冰雹",
+    "content": "部分稻穗被压伏，套作区受灾，已拍照并准备报案。",
+    "disaster_kind": "冰雹", "yield_impact_pct": 10,
+    "photos": [{"caption": "倒伏稻穗", "url": "/static/demo/rice-hail.jpg"}]})
+check("登记水稻冰雹灾害(含受灾照片)", st == 201, r)
+st, p4 = call("GET", "/api/projects/4")
+rice_inc = max(i["id"] for i in p4["incidents"] if i["kind"] == "hail")
+
+# 登记减产分配（一并保险报案）
+st, r = call("POST", "/api/hail-allocations", T["adopter"],
+             {"incident_id": rice_inc, "pickable_kg": 4000})
+check("认养人不能登记减产分配", st == 403, r)
+st, r = call("POST", "/api/hail-allocations", T["farmer"], {
+    "incident_id": rice_inc, "pickable_kg": 4000,
+    "insurance_policy_no": "PICC-HAIL-2026-RICE-7",
+    "insurance_loss_kg": 240, "insurance_amount": 3600,
+    "plan_delay": "未碾新米顺延至11月15日前到货，缺口保险折算补偿。",
+    "plan_swap": "等值换购本农场晚秋蓝莓，客服确认后排批次。",
+    "plan_refund": "按保底缺口比例原路退款。", "new_eta_date": "2026-11-15"})
+check("农场登记减产分配并自动报案", st == 201 and r["shortage_kg"] > 0 and r["insurance_claim_id"], r)
+alc_id = r["id"]
+promised, pickable, shortage = r["promised_kg"], r["pickable_kg"], r["shortage_kg"]
+st, r = call("POST", "/api/hail-allocations", T["farmer"],
+             {"incident_id": rice_inc, "pickable_kg": 4000})
+check("重复登记被拦截", st == 409, r)
+
+# 认养人在方案发布前不能选择
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/choices", T["adopter2"],
+             {"option": "refund", "adoption_id": rice_aid_w})
+check("方案发布前选择被拦截", st == 409, r)
+
+# 客服发布三选一
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/publish", T["adopter"], {})
+check("认养人不能发布方案", st == 403, r)
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/publish", T["service"], {})
+check("客服发布三选一并为每单生成待选择记录",
+      st == 200 and r["ok"] and r["published_choices"] >= 2, r)
+st, detail = call("GET", f"/api/hail-allocations/{alc_id}", T["service"])
+ch_by_adopt = {c["adoption_id"]: c for c in detail["choices"]}
+check("吴琳水稻订单存在待选择记录",
+      rice_aid_w in ch_by_adopt and ch_by_adopt[rice_aid_w]["status"] == "pending", ch_by_adopt.keys())
+ch_w = ch_by_adopt[rice_aid_w]["id"]
+# 陈曦的水稻订单（种子 id=6）
+rice_aid_c = next(a for a in ch_by_adopt if ch_by_adopt[a]["user_name"].startswith("陈曦"))
+ch_c = ch_by_adopt[rice_aid_c]["id"]
+
+# 不能为他人订单选择
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/choices", T["adopter"],
+             {"option": "refund", "adoption_id": rice_aid_w})
+check("不能代他人订单选择", st == 403, r)
+# 关闭前不能关闭（有待确认）
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/close", T["service"], {})
+check("未全部确认不能关闭", st == 409, r)
+
+# 吴琳：按比例退款（自动生成现金赔付 + 证书换发）
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/choices", T["adopter2"],
+             {"option": "refund", "adoption_id": rice_aid_w})
+check("吴琳选择按比例退款", st == 200 and r["status"] == "confirmed" and r["refund_amount"] > 0, r)
+expect_refund = round(269.0 * shortage / promised, 2)
+check("退款额=订单金额×缺口比例", abs(r["refund_amount"] - expect_refund) < 0.01, (r["refund_amount"], expect_refund))
+st, mine_w = call("GET", "/api/my/adoptions", T["adopter2"])
+rw = next(a for a in mine_w if a["id"] == rice_aid_w)
+check("退款订单证书已换发(版本2/编号-R2)", rw["cert_version"] == 2 and rw["cert_no"].endswith("-R2"),
+      (rw["cert_no"], rw["cert_version"]))
+check("退款订单可见按比例退款赔付",
+      any(c["kind"] == "cash" and abs(c["amount"] - expect_refund) < 0.01 for c in rw["compensations"]),
+      rw["compensations"])
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/choices", T["adopter2"],
+             {"option": "delay", "adoption_id": rice_aid_w})
+check("已确认选择不能重复提交", st == 409, r)
+
+# 陈曦：延期（证书换发 + 未发批次 ETA 更新）
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/choices", T["adopter"],
+             {"option": "delay", "adoption_id": rice_aid_c, "eta_date": "2026-11-15"})
+check("陈曦选择延期交付", st == 200 and r["eta_date"].startswith("2026-11-15"), r)
+st, mine_c = call("GET", "/api/my/adoptions", T["adopter"])
+rc = next(a for a in mine_c if a["id"] == rice_aid_c)
+check("延期订单证书已(换)签发且注明延期原因",
+      rc["cert_no"] and "延期" in (rc["cert_reissue_reason"] or ""),
+      (rc["cert_no"], rc["cert_reissue_reason"]))
+check("延期后预计到货时间更新", rc["latest_eta_date"] == "2026-11-15", rc["latest_eta_date"])
+
+# 周凯：换品类（水稻→晚秋蓝莓），客服确认后重新确认配送批次
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/choices", T["adopter3"], {
+    "option": "swap", "adoption_id": rice_aid_z, "swap_project_id": 6})
+check("周凯选择换品类(水稻→晚秋蓝莓)", st == 200 and r["option"] == "swap" and r["swap_project_id"] == 6, r)
+swap_choice_id = r["id"]
+# 客服确认前不能确认配送批次
+st, r = call("POST", f"/api/hail-choices/{swap_choice_id}/batch", T["adopter3"],
+             {"batch_plan_date": "2026-11-18", "batch_eta_date": "2026-11-20"})
+check("客服确认前不能确认换购批次", st == 409, r)
+# 客服确认换品类（结果同步客服、预排换购运单）
+st, r = call("POST", f"/api/hail-choices/{swap_choice_id}/service", T["adopter3"], {})
+check("非客服不能确认换品类", st == 403, r)
+st, r = call("POST", f"/api/hail-choices/{swap_choice_id}/service", T["service"], {
+    "action": "confirm", "batch_seq": 1, "batch_plan_date": "2026-11-18",
+    "batch_eta_date": "2026-11-20", "batch_spec": "晚秋蓝莓礼盒（换购批次，顺丰生鲜冷链）",
+    "note": "换品类等值兑换已确认，结果同步客服。"})
+check("客服确认换品类", st == 200 and r["service_status"] == "confirmed", r)
+# 认养人重新确认配送批次 → 证书换发 + ETA
+st, r = call("POST", f"/api/hail-choices/{swap_choice_id}/batch", T["adopter3"], {
+    "batch_seq": 1, "batch_plan_date": "2026-11-18", "batch_eta_date": "2026-11-20",
+    "batch_spec": "晚秋蓝莓礼盒（换购批次，顺丰生鲜冷链）"})
+check("认养人重新确认换购配送批次", st == 200 and r["batch_status"] == "confirmed", r)
+st, mine_z = call("GET", "/api/my/adoptions", T["adopter3"])
+rs = next(a for a in mine_z if a["id"] == rice_aid_z)
+check("换品类订单换发证书(第2版)并指向换购批次",
+      rs["cert_version"] == 2 and len(rs.get("swap_shipments", [])) >= 1,
+      (rs["cert_no"], rs.get("swap_shipments")))
+check("换购批次到货时间可见", rs["latest_eta_date"] == "2026-11-20", rs["latest_eta_date"])
+
+# 理赔状态同步认养人：推进报案到各状态，冰雹工单流水出现“保险理赔状态同步认养人”
+rice_claim = detail["allocation"]["insurance_claim_id"]
+for st_ in ("surveying", "approved", "settled"):
+    st, r = call("POST", f"/api/insurance-claims/{rice_claim}", T["service"], {"status": st_})
+check("水稻理赔推进到到账", st == 200 and r["status"] == "settled", r)
+st, idetail = call("GET", f"/api/incidents/{rice_inc}", T["adopter"])
+sync_events = [e for e in idetail["events"] if e["action"] == "保险理赔状态同步认养人"]
+check("理赔状态变化同步到冰雹工单(认养人可见)", len(sync_events) >= 3, len(sync_events))
+check("工单详情含冰雹减产分配", len(idetail["hail_allocations"]) >= 1, idetail.keys())
+
+# 关闭分配前，客服/管理员代剩余待选择订单（如公益代捐份额）兜底选择延期
+st, detail = call("GET", f"/api/hail-allocations/{alc_id}", T["service"])
+remaining = [c for c in detail["choices"] if c["status"] != "confirmed"]
+for c in remaining:
+    st, r = call("POST", f"/api/hail-allocations/{alc_id}/choices", T["service"],
+                 {"adoption_id": c["adoption_id"], "option": "delay", "eta_date": "2026-11-15"})
+    check(f"客服代剩余订单#{c['adoption_id']}兜底选择延期", st == 200 and r["status"] == "confirmed", r)
+
+# 关闭分配，农场续认信用同步
+st, before = call("GET", "/api/farm/dashboard", T["farmer"])
+credit_before = before["stats"]["renew_credit"]
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/close", T["service"], {})
+check("全部确认后关闭分配并同步续认信用", st == 200 and r["ok"], r)
+st, after = call("GET", "/api/farm/dashboard", T["farmer"])
+credit_after = after["stats"]["renew_credit"]
+check("农场续认信用随减产分配下降", credit_after < credit_before, (credit_before, credit_after))
+st, detail2 = call("GET", f"/api/hail-allocations/{alc_id}", T["service"])
+check("分配单状态为 closed", detail2["allocation"]["status"] == "closed", detail2["allocation"]["status"])
+st, r = call("POST", f"/api/hail-allocations/{alc_id}/close", T["service"], {})
+check("重复关闭被拦截", st == 409, r)
 
 # ---- 权限边界 ----
 st, r = call("POST", "/api/projects", T["adopter"], {"plot_id": 1, "batch_no": "X", "kind": "apple",

@@ -380,6 +380,17 @@ func (s *Server) handleFarmDashboard(w http.ResponseWriter, r *http.Request) {
 	stats["avg_satisfaction"] = vSat
 	_ = s.Pool.QueryRow(ctx, `SELECT COALESCE(AVG(CASE WHEN would_renew THEN 100 ELSE 0 END),0) FROM callbacks cb JOIN projects p ON p.id=cb.project_id WHERE p.farm_id=$1`, farmID).Scan(&vRenew)
 	stats["renew_rate"] = vRenew
+	var credit float64
+	var creditNote string
+	_ = s.Pool.QueryRow(ctx, `SELECT renew_credit, COALESCE(renew_credit_note,'') FROM farms WHERE id=$1`, farmID).
+		Scan(&credit, &creditNote)
+	stats["renew_credit"] = credit
+	stats["renew_credit_note"] = creditNote
+	var hailCount int64
+	_ = s.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM hail_allocations ha JOIN projects p ON p.id=ha.project_id WHERE p.farm_id=$1`, farmID).
+		Scan(&hailCount)
+	stats["hail_allocations"] = hailCount
 
 	writeJSON(w, 200, map[string]interface{}{
 		"farm_id":          farmID,

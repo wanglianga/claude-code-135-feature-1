@@ -32,6 +32,11 @@ func (s *Server) routes() {
 	m.HandleFunc("/api/insurance-claims", s.requireAuth(s.handleInsuranceClaims))
 	m.HandleFunc("/api/insurance-claims/", s.requireAuth(s.handleInsuranceClaimByID))
 
+	// 冰雹减产分配
+	m.HandleFunc("/api/hail-allocations", s.requireAuth(s.handleHailAllocations))
+	m.HandleFunc("/api/hail-allocations/", s.requireAuth(s.hailAllocationsRouter))
+	m.HandleFunc("/api/hail-choices/", s.requireAuth(s.handleHailChoiceByID))
+
 	// 回访 / 证书 / 直播 / 参观 / 团购 / 公益
 	m.HandleFunc("/api/callbacks", s.requireAuth(s.handleCallbacks))
 	m.HandleFunc("/api/live", s.handleLive)

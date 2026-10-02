@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { get, post, KIND_EMOJI, fmtMoney, fmtKg, fmtDay, fmtDate, SHIP_STATUS_LABEL } from '../api'
 import { Tag, ShipFlow, Modal, Empty, Stat, useToast } from '../components/ui'
+import HailPanel from '../components/HailPanel'
 
 const ORDER_STATUS = { paid: '待发货', shipping: '履约中', completed: '已完成', refunded: '已退款' }
 const COMP_LABEL = { cash: '现金赔付', reship: '补发', insurance: '保险赔付', credit: '下季抵扣' }
@@ -50,6 +51,14 @@ export default function MyAdoptions() {
                   <Stat label="在途/待发" value={fmtKg(rf.planned_kg)} cls="amber" />
                   <Stat label="赔付折算" value={fmtKg(rf.compensated_kg_equiv)} cls={rf.compensated_kg_equiv > 0 ? 'red' : ''} />
                 </div>
+                {a.latest_eta_date && (
+                  <div className="small mt8" style={{ color: '#0369a1' }}>
+                    🕒 最新预计到货时间：<strong>{fmtDay(a.latest_eta_date)}</strong>
+                    {a.hail_allocation && <span className="muted">（已随冰雹减产分配更新）</span>}
+                  </div>
+                )}
+
+                <HailPanel adoption={a} onDone={load} />
 
                 <div className="grid grid-2 mt16">
                   <div>
@@ -69,6 +78,24 @@ export default function MyAdoptions() {
                         {(!a.shipments || a.shipments.length === 0) && <tr><td colSpan="4" className="muted">尚未排产</td></tr>}
                       </tbody>
                     </table>
+                    {(a.swap_shipments || []).length > 0 && (
+                      <>
+                        <h3 className="mt16">🔁 换品类换购批次</h3>
+                        <table>
+                          <thead><tr><th>换购项目/批次</th><th>计划/到货</th><th>规格/路线</th><th>状态</th></tr></thead>
+                          <tbody>
+                            {a.swap_shipments.map((s) => (
+                              <tr key={s.id}>
+                                <td className="small">{KIND_EMOJI[s.swap_kind]} {s.swap_project_title}<br /><span className="muted">{s.swap_batch_no} · 第{s.seq}批</span></td>
+                                <td className="small">{fmtDay(s.plan_date)}<br /><span className="muted">到货 {fmtDay(s.eta_date)}</span></td>
+                                <td className="small">{s.pack_spec}<br /><span className="muted">{s.cold_route}</span></td>
+                                <td><ShipFlow status={s.status} /></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </>
+                    )}
                   </div>
                   <div>
                     <h3>💰 赔付与售后</h3>
@@ -189,6 +216,14 @@ function CertModal({ adoption, onClose }) {
         <div className="small muted">批次 {adoption.batch_no} · {adoption.shares} {adoption.unit_name || '份'}</div>
         <div className="mt8">证书编号</div>
         <div className="no" style={{ fontSize: 18 }}>{adoption.cert_no}</div>
+        {adoption.cert_version > 1 && (
+          <div className="small" style={{ color: '#b45309' }}>🔁 第 {adoption.cert_version} 版（冰雹减产分配后换发）</div>
+        )}
+        {adoption.cert_reissue_reason && (
+          <div className="small mt8" style={{ background: '#fffbeb', padding: 8, borderRadius: 6 }}>
+            {adoption.cert_reissue_reason}
+          </div>
+        )}
         <div className="small muted mt8">签发日期 {fmtDay(adoption.created_at)}</div>
       </div>
     </Modal>

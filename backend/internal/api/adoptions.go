@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 func parseID(s string) (int64, error) {
@@ -133,10 +134,12 @@ func (s *Server) handleMyAdoptions(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(r)
 	rows, err := s.queryRows(r.Context(), `
 		SELECT a.*, p.title, p.kind, p.batch_no, p.guarantee_kg, p.rights_text,
-		       f.name AS farm_name,
-		       (SELECT cert_no FROM certificates WHERE adoption_id=a.id) AS cert_no
+		       p.farm_id,
+		       f.name AS farm_name, f.renew_credit AS farm_renew_credit,
+		       c.cert_no, c.version AS cert_version, c.reissue_reason AS cert_reissue_reason
 		FROM adoptions a JOIN projects p ON p.id=a.project_id
 		JOIN farms f ON f.id=p.farm_id
+		LEFT JOIN certificates c ON c.adoption_id=a.id
 		WHERE a.user_id=$1 ORDER BY a.id DESC`, u.ID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -147,18 +150,29 @@ func (s *Server) handleMyAdoptions(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		aid, _ := row["id"].(int64)
 		ships, _ := s.queryRows(r.Context(),
-			`SELECT seq, plan_date, pack_spec, cold_route, weight_kg, status, tracking_no,
-			        shipped_at, delivered_at, bad_fruit_rate
-			 FROM shipments WHERE adoption_id=$1 ORDER BY seq`, aid)
+			`SELECT seq, plan_date, eta_date, pack_spec, cold_route, weight_kg, status, tracking_no,
+			        shipped_at, delivered_at, bad_fruit_rate, hail_choice_id
+			 FROM shipments
+			 WHERE adoption_id=$1 AND project_id=(SELECT project_id FROM adoptions WHERE id=$1)
+			 ORDER BY plan_date, seq`, aid)
+		// 换品类后的换购批次（其他项目/品类）单独呈现，不并入原品类保底产量折算
+		swapShips, _ := s.queryRows(r.Context(),
+			`SELECT sh.*, hc.swap_project_id, sp.title AS swap_project_title, sp.kind AS swap_kind, sp.batch_no AS swap_batch_no
+			 FROM shipments sh
+			 JOIN hail_choices hc ON hc.id=sh.hail_choice_id
+			 LEFT JOIN projects sp ON sp.id=sh.project_id
+			 WHERE hc.adoption_id=$1 ORDER BY sh.plan_date, sh.seq`, aid)
 		comps, _ := s.queryRows(r.Context(),
 			`SELECT c.amount, c.kind, c.status, c.note, c.paid_at, i.title AS incident_title
 			 FROM compensations c LEFT JOIN incidents i ON i.id=c.incident_id
 			 WHERE c.adoption_id=$1 ORDER BY c.id`, aid)
 		cbs, _ := s.queryRows(r.Context(),
 			`SELECT * FROM callbacks WHERE adoption_id=$1`, aid)
+		hail := s.hailChoiceForAdoption(r.Context(), aid)
 
 		var shipped, plannedKg float64
 		allDelivered := len(ships) > 0
+		var latestETA string
 		for _, sh := range ships {
 			if v, ok := sh["weight_kg"].(float64); ok {
 				st, _ := sh["status"].(string)
@@ -173,6 +187,17 @@ func (s *Server) handleMyAdoptions(w http.ResponseWriter, r *http.Request) {
 				}
 			} else {
 				allDelivered = false
+			}
+			if eta := asDay(sh["eta_date"]); eta != "" && eta > latestETA {
+				latestETA = eta
+			}
+		}
+		// 延期/换品类选择中的预计到货优先
+		if hail != nil {
+			if e := asDay(hail["eta_date"]); e != "" {
+				latestETA = e
+			} else if e := asDay(hail["batch_eta_date"]); e != "" {
+				latestETA = e
 			}
 		}
 		sharesV, _ := row["shares"].(int64)
@@ -223,12 +248,28 @@ func (s *Server) handleMyAdoptions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		row["shipments"] = ships
+		row["swap_shipments"] = swapShips
 		row["compensations"] = comps
 		row["callbacks"] = cbs
 		row["rights_fulfillment"] = fulfilled
+		row["hail_allocation"] = hail
+		row["latest_eta_date"] = latestETA
 		result = append(result, row)
 	}
 	writeJSON(w, 200, result)
+}
+
+// asDay 把 DATE（pgx 返回 time.Time）或字符串统一成 YYYY-MM-DD
+func asDay(v interface{}) string {
+	switch x := v.(type) {
+	case time.Time:
+		return x.Format("2006-01-02")
+	case string:
+		if len(x) >= 10 {
+			return x[:10]
+		}
+	}
+	return ""
 }
 
 func (s *Server) handleAdoptionByID(w http.ResponseWriter, r *http.Request) {

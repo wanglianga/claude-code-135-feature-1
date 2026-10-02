@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   get, post, INCIDENT_LABEL, INCIDENT_COLOR, ROLE_LABEL,
-  fmtMoney, fmtDate,
+  fmtMoney, fmtDate, fmtDay, fmtKg, INSURANCE_STATUS_LABEL, HAIL_OPTION_LABEL,
 } from '../api'
 import { Tag, Modal, Empty, useToast } from '../components/ui'
 import { useAuth } from '../auth'
+import HailAllocSection from '../components/HailAllocSection'
 
 const STATUS = { open: '待处理', processing: '处理中', resolved: '已解决', compensated: '已赔付' }
 const STATUS_CLS = { open: 'red', processing: 'amber', resolved: 'gray', compensated: 'green' }
@@ -117,6 +118,8 @@ function IncidentDetail({ d, onClose, onChanged }) {
           </table>
         </>
       )}
+
+      <HailAllocSection detail={d} onChanged={onChanged} />
 
       <div className="card mt16" style={{ background: '#fafbf8' }}>
         <h3>追加处理结果（当前身份：{ROLE_LABEL[user.role]}）</h3>

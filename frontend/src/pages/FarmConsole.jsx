@@ -22,8 +22,15 @@ export default function FarmConsole() {
         <Stat label="累计赔付支出" value={fmtMoney(s.total_compensation)} cls="red" />
         <Stat label="平均客户满意度" value={Number(s.avg_satisfaction || 0).toFixed(2) + ' / 5'} />
         <Stat label="客户续认率" value={Number(s.renew_rate || 0).toFixed(0) + '%'} cls="amber" />
+        <Stat label="续认信用分" value={Number(s.renew_credit || 100).toFixed(2)} cls={s.renew_credit < 100 ? 'red' : 'green'} />
         <Stat label="待处理工单" value={d.open_incidents.length} cls="red" />
       </div>
+      {s.renew_credit_note && (
+        <div className="card mt16" style={{ background: '#fffbeb' }}>
+          <strong>🌦 续认信用同步记录：</strong>
+          <span className="small"> {s.renew_credit_note}</span>
+        </div>
+      )}
 
       <div className="grid grid-2 mt16">
         <div className="card">

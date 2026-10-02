@@ -83,6 +83,20 @@ export const SHIP_STATUS_LABEL = {
 }
 export const SHIP_STATUS_FLOW = ['planned', 'picked', 'packed', 'shipped', 'delivered']
 
+export const HAIL_OPTION_LABEL = {
+  delay: '延期交付',
+  swap: '换品类',
+  refund: '按比例退款',
+}
+export const HAIL_OPTION_EMOJI = { delay: '🗓', swap: '🔁', refund: '💸' }
+export const INSURANCE_STATUS_LABEL = {
+  applied: '已报案',
+  surveying: '查勘中',
+  approved: '已核损待赔付',
+  settled: '已到账',
+  rejected: '已拒赔',
+}
+
 export function fmtMoney(v) {
   if (v === null || v === undefined) return '—'
   return '¥' + Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
